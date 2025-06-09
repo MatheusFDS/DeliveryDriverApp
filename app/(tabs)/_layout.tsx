@@ -1,4 +1,4 @@
-// app/(tabs)/_layout.tsx - VERSÃO CORRIGIDA
+// app/(tabs)/_layout.tsx
 import { Tabs } from 'expo-router';
 import { Text } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
@@ -7,14 +7,12 @@ import { Redirect } from 'expo-router';
 export default function TabLayout() {
   const { user, isLoading } = useAuth();
 
-  // Se ainda está carregando, não renderiza nada
   if (isLoading) {
     return null;
   }
 
-  // Se não há usuário, redireciona para login
   if (!user) {
-    return <Redirect href="/(auth)/login" />;
+    return <Redirect href="/login" />;
   }
 
   return (
@@ -77,7 +75,6 @@ export default function TabLayout() {
   );
 }
 
-// COMPONENTE CORRIGIDO - usando Text do React Native
 function TabBarIcon({ name, color, size }: { name: string; color: string; size: number }) {
   return (
     <Text 

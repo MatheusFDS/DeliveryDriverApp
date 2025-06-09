@@ -1,3 +1,7 @@
+// ==============================================================================
+// CORREÇÃO 1: _layout.tsx PRINCIPAL
+// ==============================================================================
+
 // app/_layout.tsx
 import { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
@@ -49,9 +53,13 @@ export default function RootLayout() {
           },
         }}
       >
+        {/* REMOVIDO: "(auth)" - agora registra diretamente as rotas específicas */}
         <Stack.Screen 
-          name="(auth)" 
-          options={{ headerShown: false }} 
+          name="login" 
+          options={{ 
+            headerShown: false,
+            title: 'Login'
+          }} 
         />
         <Stack.Screen 
           name="(tabs)" 

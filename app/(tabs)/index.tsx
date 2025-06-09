@@ -7,69 +7,99 @@ import {
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
+  ActivityIndicator, // Adicionado para consistência
 } from 'react-native';
 import { router } from 'expo-router';
-import { MOCK_ROUTES, getActiveRoute } from '../../data/mockData';
-import { Route, RouteStatus } from '../../types';
+// Importações corrigidas:
+import { RouteMobile as Route, RouteMobileStatus } from '../../types'; // Usa RouteMobile como Route
+import { getRouteMobileStatusConfig } from '../../types'; // Importa a função de config do types/index.ts
+import { api } from '../../services/api';
 
 export default function RoutesScreen() {
-  const [routes, setRoutes] = useState<Route[]>(MOCK_ROUTES);
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [activeRoute, setActiveRoute] = useState<Route | undefined>(undefined);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
 
   useEffect(() => {
     loadRoutes();
   }, []);
 
-  const loadRoutes = () => {
-    setRoutes(MOCK_ROUTES);
-    setActiveRoute(getActiveRoute());
+  const loadRoutes = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      
+      const response = await api.getRoutes(); // Espera-se que retorne ApiResponse<RouteMobile[]>
+      
+      if (response.success && response.data) {
+        setRoutes(response.data);
+        // Status para rota ativa agora é 'iniciado'
+        const active = response.data.find(route => route.status === 'iniciado'); 
+        setActiveRoute(active);
+        
+      } else {
+        setError(response.message || 'Erro ao carregar roteiros');
+      }
+    } catch (err) {
+      const e = err as Error;
+      console.error('📱 [ROUTES] Erro:', e);
+      setError(`Erro de conexão: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const onRefresh = () => {
+  const onRefresh = async () => {
     setRefreshing(true);
-    // Simula um delay de refresh
-    setTimeout(() => {
-      loadRoutes();
-      setRefreshing(false);
-    }, 1000);
+    await loadRoutes();
+    setRefreshing(false);
   };
 
-  const navigateToRoute = (routeId: number) => {
+  const navigateToRoute = (routeId: string) => { // routeId já é string
     router.push(`/route/${routeId}`);
   };
+  
+  // As funções getStatusColor e getStatusText agora usarão getRouteMobileStatusConfig
+  // Se precisar apenas da cor ou texto, pode acessá-los de lá.
+  // Exemplo: const statusConfig = getRouteMobileStatusConfig(route.status);
+  // Cor: statusConfig.color, Texto: statusConfig.text
 
-  const getStatusColor = (status: RouteStatus): string => {
-    switch (status) {
-      case 'ativo': return '#4CAF50';
-      case 'finalizado': return '#9E9E9E';
-      case 'cancelado': return '#F44336';
-      default: return '#2196F3';
-    }
-  };
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={styles.loadingText}>⏳ Carregando roteiros...</Text>
+        </View>
+      </View>
+    );
+  }
 
-  const getStatusText = (status: RouteStatus): string => {
-    switch (status) {
-      case 'ativo': return 'ATIVO';
-      case 'finalizado': return 'FINALIZADO';
-      case 'cancelado': return 'CANCELADO';
-      case 'pendente': return 'PENDENTE';
-      default: {
-        const _exhaustiveCheck: never = status;
-        return 'DESCONHECIDO';
-      }
-    }
-  };
+  if (error) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorEmoji}>❌</Text>
+          <Text style={styles.errorTitle}>Erro ao carregar</Text>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={loadRoutes}>
+            <Text style={styles.retryButtonText}>🔄 Tentar novamente</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
       <ScrollView 
         style={styles.scrollView}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#007AFF"]} tintColor={"#007AFF"} />
         }
       >
-        {/* Roteiro Ativo em Destaque */}
         {activeRoute && (
           <View style={styles.activeSection}>
             <Text style={styles.sectionTitle}>🚛 Roteiro Ativo</Text>
@@ -79,11 +109,12 @@ export default function RoutesScreen() {
             >
               <View style={styles.activeRouteHeader}>
                 <Text style={styles.activeRouteTitle}>
-                  Roteiro {activeRoute.date}
+                  Roteiro {new Date(activeRoute.date).toLocaleDateString('pt-BR')}
                 </Text>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(activeRoute.status) }]}>
+                {/* Usando getRouteMobileStatusConfig para cor e texto */}
+                <View style={[styles.statusBadge, { backgroundColor: getRouteMobileStatusConfig(activeRoute.status).color }]}>
                   <Text style={styles.statusText}>
-                    {getStatusText(activeRoute.status)}
+                    {getRouteMobileStatusConfig(activeRoute.status).icon} {getRouteMobileStatusConfig(activeRoute.status).text}
                   </Text>
                 </View>
               </View>
@@ -106,48 +137,50 @@ export default function RoutesScreen() {
           </View>
         )}
 
-        {/* Lista de Todos os Roteiros */}
         <View style={styles.allRoutesSection}>
           <Text style={styles.sectionTitle}>📋 Todos os Roteiros</Text>
           
-          {routes.map((route) => (
-            <TouchableOpacity
-              key={route.id}
-              style={[
-                styles.routeCard,
-                route.status === 'ativo' && styles.activeRouteCardBorder
-              ]}
-              onPress={() => navigateToRoute(route.id)}
-            >
-              <View style={styles.routeHeader}>
-                <View>
-                  <Text style={styles.routeDate}>📅 {route.date}</Text>
-                  <Text style={styles.routeValue}>
-                    💰 R$ {route.totalValue.toFixed(2)}
-                  </Text>
+          {routes.map((route) => {
+            const statusConfig = getRouteMobileStatusConfig(route.status);
+            return (
+              <TouchableOpacity
+                key={route.id}
+                style={[
+                  styles.routeCard,
+                  // Usando 'iniciado' para o status ativo
+                  route.status === 'iniciado' && styles.activeRouteCardBorder 
+                ]}
+                onPress={() => navigateToRoute(route.id)}
+              >
+                <View style={styles.routeHeader}>
+                  <View>
+                    <Text style={styles.routeDate}>📅 {new Date(route.date).toLocaleDateString('pt-BR')}</Text>
+                    <Text style={styles.routeValue}>
+                      💰 R$ {route.totalValue.toFixed(2)}
+                    </Text>
+                  </View>
+                  <View style={[styles.statusBadge, { backgroundColor: statusConfig.color }]}>
+                    <Text style={styles.statusText}>
+                      {statusConfig.icon} {statusConfig.text}
+                    </Text>
+                  </View>
                 </View>
-                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(route.status) }]}>
-                  <Text style={styles.statusText}>
-                    {getStatusText(route.status)}
-                  </Text>
-                </View>
-              </View>
-              
-              <Text style={styles.deliveryCount}>
-                📦 {route.deliveries.length} entregas
-              </Text>
-              
-              {route.status === 'ativo' && (
-                <Text style={styles.activeIndicator}>
-                  🔥 Roteiro em andamento
+                
+                <Text style={styles.deliveryCount}>
+                  📦 {route.deliveries.length} entregas
                 </Text>
-              )}
-            </TouchableOpacity>
-          ))}
+                
+                {route.status === 'iniciado' && (
+                  <Text style={styles.activeIndicator}>
+                    🔥 Roteiro em andamento
+                  </Text>
+                )}
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
-        {/* Mensagem se não houver roteiros */}
-        {routes.length === 0 && (
+        {routes.length === 0 && !loading && ( // Adicionado !loading para não mostrar com o loading
           <View style={styles.emptyState}>
             <Text style={styles.emptyStateEmoji}>📭</Text>
             <Text style={styles.emptyStateTitle}>Nenhum roteiro encontrado</Text>
@@ -169,6 +202,48 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 8,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorEmoji: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  errorTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 8,
+  },
+  errorText: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#2196F3',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
   activeSection: {
     padding: 16,
   },
@@ -183,11 +258,11 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   activeRouteCard: {
-    backgroundColor: '#e3f2fd',
+    backgroundColor: '#e3f2fd', // Azul claro para destaque
     borderRadius: 16,
     padding: 20,
     borderLeftWidth: 5,
-    borderLeftColor: '#2196F3',
+    borderLeftColor: '#2196F3', // Cor primária
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
@@ -203,7 +278,7 @@ const styles = StyleSheet.create({
   activeRouteTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#1976d2',
+    color: '#1976d2', // Tom de azul mais escuro
   },
   activeRouteDetails: {
     flexDirection: 'row',
@@ -213,12 +288,12 @@ const styles = StyleSheet.create({
   activeRouteValue: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#4CAF50',
+    color: '#388E3C', // Verde para valor
   },
   activeRouteDeliveries: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#666',
+    color: '#555',
   },
   continueButtonContainer: {
     backgroundColor: 'rgba(33, 150, 243, 0.1)',
@@ -238,13 +313,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 4,
     elevation: 3,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
   },
-  activeRouteCardBorder: {
+  activeRouteCardBorder: { // Usado para roteiros 'iniciado' na lista geral
+    borderColor: '#4CAF50', // Verde para indicar ativo
     borderLeftWidth: 4,
-    borderLeftColor: '#4CAF50',
   },
   routeHeader: {
     flexDirection: 'row',
@@ -261,7 +338,7 @@ const styles = StyleSheet.create({
   routeValue: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#4CAF50',
+    color: '#388E3C',
   },
   deliveryCount: {
     fontSize: 14,
@@ -270,31 +347,32 @@ const styles = StyleSheet.create({
   },
   activeIndicator: {
     fontSize: 12,
-    color: '#ff9800',
+    color: '#E65100', // Laranja para "em andamento"
     fontWeight: '600',
     fontStyle: 'italic',
   },
   statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    minWidth: 80,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16, // Mais arredondado para o badge
+    minWidth: 90,
     alignItems: 'center',
   },
   statusText: {
     color: 'white',
-    fontSize: 11,
+    fontSize: 10, // Um pouco menor
     fontWeight: 'bold',
+    textTransform: 'uppercase',
   },
   emptyState: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 40,
-    marginTop: 60,
+    marginTop: 40, // Ajustado para não ficar tão no topo se a lista for pequena
   },
   emptyStateEmoji: {
-    fontSize: 64,
+    fontSize: 56, // Um pouco menor
     marginBottom: 16,
   },
   emptyStateTitle: {

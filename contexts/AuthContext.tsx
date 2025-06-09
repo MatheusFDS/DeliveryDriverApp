@@ -1,127 +1,167 @@
-// contexts/AuthContext.tsx - VERSÃO COM CNPJ
-import React, { createContext, useContext, useState, useEffect } from 'react';
+// app/contexts/AuthContext.tsx
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { User } from '../types';
-import { MOCK_USER } from '../data/mockData';
+import { Alert } from 'react-native';
+import { currentApiConfig } from '../config/apiConfig';
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password: string, cnpj: string) => Promise<boolean>; // MODIFICADO
+  login: (email: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const BASE_URL = currentApiConfig.baseURL;
 
-// MOCK DE EMPRESAS PARA TESTE
-const MOCK_COMPANIES = [
-  {
-    cnpj: '12.345.678/0001-90',
-    name: 'Express Delivery Ltda',
-    users: [
-      {
-        ...MOCK_USER,
-        companyName: 'Express Delivery Ltda',
-        companyCnpj: '12.345.678/0001-90',
-      }
-    ]
-  },
-  {
-    cnpj: '98.765.432/0001-10',
-    name: 'Rápido Transportes S.A.',
-    users: [
-      {
-        id: 2,
-        name: 'Maria Santos',
-        email: 'maria@exemplo.com',
-        phone: '(11) 88888-8888',
-        vehicle: 'Yamaha Fazer 250',
-        plate: 'XYZ-5678',
-        companyName: 'Rápido Transportes S.A.',
-        companyCnpj: '98.765.432/0001-10',
-      }
-    ]
-  }
-];
-
-export function AuthProvider({ children }: { children: React.ReactNode }) {
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    checkStoredUser();
-  }, []);
-
-  const checkStoredUser = async () => {
+  const fetchAndFormatUserProfile = async (token: string): Promise<User | null> => {
+    setIsLoading(true);
     try {
-      const storedUser = await AsyncStorage.getItem('user');
-      if (storedUser) {
-        setUser(JSON.parse(storedUser));
-        router.replace('/(tabs)');
+      const profileResponse = await fetch(`${BASE_URL}/mobile/v1/profile`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (profileResponse.ok) {
+        const profileApiResponse = await profileResponse.json();
+        if (profileApiResponse.success && profileApiResponse.data) {
+          const userData: User = profileApiResponse.data;
+          return userData;
+        } else {
+          console.error('Erro ao buscar perfil (API retornou não sucesso):', profileApiResponse.message);
+          Alert.alert('Erro de Perfil', profileApiResponse.message || 'Não foi possível carregar os dados do perfil.');
+        }
       } else {
-        router.replace('/(auth)/login');
+        const errorData = await profileResponse.json().catch(() => ({ message: 'Erro ao buscar perfil.' }));
+        console.error('Erro ao buscar perfil (HTTP):', profileResponse.status, errorData.message);
+        Alert.alert('Erro de Perfil', `Erro ${profileResponse.status}: ${errorData.message}`);
       }
+      return null;
     } catch (error) {
-      console.error('Erro ao verificar usuário:', error);
-      router.replace('/(auth)/login');
+      console.error('Exceção ao buscar perfil do usuário:', error);
+      Alert.alert('Erro de Rede', 'Ocorreu um erro ao buscar dados do perfil. Verifique sua conexão.');
+      return null;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const login = async (email: string, password: string, cnpj: string): Promise<boolean> => {
+  const checkStoredUser = async () => {
+    setIsLoading(true);
     try {
-      // Remove formatação do CNPJ para busca
-      const cleanCnpj = cnpj.replace(/\D/g, '');
-      const formattedCnpj = cnpj;
-
-      // Busca empresa pelo CNPJ
-      const company = MOCK_COMPANIES.find(c => 
-        c.cnpj.replace(/\D/g, '') === cleanCnpj
-      );
-
-      if (!company) {
-        console.log('Empresa não encontrada para CNPJ:', formattedCnpj);
-        return false;
+      const storedToken = await AsyncStorage.getItem('auth_token');
+      
+      if (storedToken) {
+        const freshUserData = await fetchAndFormatUserProfile(storedToken);
+        if (freshUserData) {
+          await AsyncStorage.setItem('user', JSON.stringify(freshUserData));
+          setUser(freshUserData);
+        } else {
+          await logoutInternal(false);
+          router.replace('/login');
+        }
+      } else {
+        setUser(null);
       }
-
-      // Busca usuário dentro da empresa
-      const foundUser = company.users.find(u => 
-        u.email === email && password === '123456' // Mock password check
-      );
-
-      if (!foundUser) {
-        console.log('Usuário não encontrado ou senha incorreta');
-        return false;
-      }
-
-      // Salva dados do usuário com informações da empresa
-      const userWithCompany = {
-        ...foundUser,
-        companyName: company.name,
-        companyCnpj: company.cnpj,
-      };
-
-      await AsyncStorage.setItem('user', JSON.stringify(userWithCompany));
-      setUser(userWithCompany);
-      router.replace('/(tabs)');
-      return true;
-
     } catch (error) {
-      console.error('Erro no login:', error);
+      console.error('Erro ao verificar usuário armazenado:', error);
+      await logoutInternal(false);
+      router.replace('/login');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  useEffect(() => {
+    checkStoredUser();
+  }, []);
+
+  const login = async (email: string, password: string): Promise<boolean> => {
+    setIsLoading(true);
+    try {
+      const loginResponse = await fetch(`${BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!loginResponse.ok) {
+        const errorData = await loginResponse.json().catch(() => ({ message: 'Credenciais inválidas ou erro no servidor.' }));
+        console.error('Falha no login (HTTP):', loginResponse.status, errorData.message);
+        Alert.alert('Erro de Login', errorData.message || `Erro ${loginResponse.status}`);
+        return false;
+      }
+
+      const loginData = await loginResponse.json();
+      
+      if (!loginData.access_token) {
+        console.error('Token de acesso não recebido na resposta do login');
+        Alert.alert('Erro de Login', 'Não foi possível obter o token de acesso do servidor.');
+        return false;
+      }
+
+      await AsyncStorage.setItem('auth_token', loginData.access_token);
+      const freshUserData = await fetchAndFormatUserProfile(loginData.access_token);
+
+      if (freshUserData) {
+        await AsyncStorage.setItem('user', JSON.stringify(freshUserData));
+        setUser(freshUserData);
+        router.replace('/(tabs)');
+        return true;
+      } else {
+        Alert.alert('Erro Pós-Login', 'Login bem-sucedido, mas não foi possível carregar os dados do perfil.');
+        await logoutInternal(true);
+        return false;
+      }
+      
+    } catch (error) {
+      console.error('Exceção durante o login:', error);
+      Alert.alert('Erro Crítico de Login', 'Ocorreu um erro inesperado. Verifique sua conexão e tente novamente.');
       return false;
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const logout = async (): Promise<void> => {
-    try {
-      await AsyncStorage.removeItem('user');
-      setUser(null);
-      router.replace('/(auth)/login');
-    } catch (error) {
-      console.error('Erro no logout:', error);
+  const logoutInternal = async (notifyBackend = true) => {
+    if (notifyBackend) {
+        const token = await AsyncStorage.getItem('auth_token');
+        if (token) {
+            try {
+            await fetch(`${BASE_URL}/auth/logout`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json'},
+            });
+            } catch (error) {
+            console.warn('Aviso: Erro ao fazer logout no servidor (token local será removido de qualquer forma):', error);
+            }
+        }
     }
+    await AsyncStorage.multiRemove(['user', 'auth_token', 'refresh_token']);
+    setUser(null);
+  };
+
+  const logout = async (): Promise<void> => {
+      setIsLoading(true);
+      try {
+        await logoutInternal(true);
+      } catch (error) {
+        console.error("Erro durante o processo de logout:", error);
+        await AsyncStorage.multiRemove(['user', 'auth_token', 'refresh_token']);
+        setUser(null);
+      } finally {
+        setIsLoading(false);
+        router.replace('/login');
+      }
   };
 
   return (
@@ -134,7 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error('useAuth deve ser usado dentro de um AuthProvider');
   }
   return context;
 };

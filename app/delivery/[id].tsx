@@ -1,4 +1,3 @@
-// app/delivery/[id].tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -8,330 +7,419 @@ import {
   StyleSheet,
   Alert,
   Linking,
-  Modal,
-  TextInput,
+  RefreshControl,
+  ActivityIndicator,
   Image,
+  Modal,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
-import * as ImagePicker from 'expo-image-picker';
-import { getDeliveryById } from '../../data/mockData';
-import { Delivery, Route, DeliveryStatus } from '../../types';
+import ProofCamera from '../../components/ProofCamera';
 
-interface PhotoEvidence {
-  id: string;
-  uri: string;
-  type: 'camera' | 'gallery';
-  timestamp: string;
-}
+import {
+  DeliveryItemMobile,
+  OrderMobileStatus,
+  OrderActionMobile,
+  getOrderMobileStatusConfig,
+  getAvailableOrderActions,
+  getActionColor,
+  StatusUpdatePayload,
+  DeliveryProof
+} from '../../types';
 
-export default function DeliveryScreen() {
+import { api } from '../../services/api';
+
+export default function DeliveryDetailsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [delivery, setDelivery] = useState<Delivery | null>(null);
-  const [route, setRoute] = useState<Route | null>(null);
-  const [status, setStatus] = useState<DeliveryStatus>('pendente');
-  const [driverNotes, setDriverNotes] = useState('');
-  const [photos, setPhotos] = useState<PhotoEvidence[]>([]);
-  const [showImageModal, setShowImageModal] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [deliveryItem, setDeliveryItem] = useState<DeliveryItemMobile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string>('');
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [showProofCamera, setShowProofCamera] = useState(false);
+  const [viewingProof, setViewingProof] = useState<string | null>(null);
+
+  const loadDeliveryDetails = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      
+      if (!id) {
+        Alert.alert('Erro', 'ID da entrega não fornecido.');
+        setLoading(false);
+        return;
+      }
+
+      const response = await api.getDeliveryDetails(id); 
+      
+      if (response.success && response.data) {
+        setDeliveryItem(response.data);
+      } else {
+        setError(response.message || 'Erro ao carregar detalhes da entrega.');
+        Alert.alert('Erro', response.message || 'Erro ao carregar detalhes da entrega.');
+      }
+    } catch (err) {
+      const e = err as Error;
+      setError(`Erro de conexão: ${e.message}`);
+      Alert.alert('Erro de Conexão', 'Verifique sua internet e tente novamente.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (id) {
-      const result = getDeliveryById(parseInt(id));
-      if (result) {
-        setDelivery(result.delivery);
-        setRoute(result.route);
-        setStatus(result.delivery.status);
-        setDriverNotes(result.delivery.driverNotes || '');
-      }
+      loadDeliveryDetails();
     }
   }, [id]);
 
-  const requestCameraPermission = async () => {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadDeliveryDetails();
+    setRefreshing(false);
+  };
+
+  const handleUpdateStatus = async (newStatus: OrderMobileStatus, motivo?: string, requiresProof?: boolean) => {
+    if (!deliveryItem || !id) return;
+
+    const payload: StatusUpdatePayload = { status: newStatus };
+    if (newStatus === 'nao_entregue' && motivo) {
+        payload.motivoNaoEntrega = motivo;
+    }
+
+    try {
+      setUpdatingStatus(true);
+      const response = await api.updateDeliveryStatus(id, payload);
+      
+      if (response.success && response.data) {
+        setDeliveryItem(prev => prev ? { 
+          ...prev, 
+          status: (response.data?.newStatusMobile || newStatus) as OrderMobileStatus 
+        } : null);
+        
+        Alert.alert(
+          'Sucesso!',
+          response.data.message || `Status atualizado para: ${getOrderMobileStatusConfig(newStatus).text}`,
+          [{ 
+            text: 'OK',
+            onPress: () => {
+              if (requiresProof && (newStatus === 'entregue' || newStatus === 'nao_entregue')) {
+                setShowProofCamera(true);
+              }
+            }
+          }]
+        );
+      } else {
+        throw new Error(response.message || 'Erro ao atualizar status');
+      }
+    } catch (error) {
       Alert.alert(
-        'Permissão Necessária',
-        'Precisamos de acesso à câmera para tirar fotos das entregas.'
+        'Erro ao Atualizar',
+        error instanceof Error ? error.message : 'Não foi possível atualizar o status da entrega.',
+        [{ text: 'OK' }]
       );
-      return false;
-    }
-    return true;
-  };
-
-  const takePhoto = async () => {
-    const hasPermission = await requestCameraPermission();
-    if (!hasPermission) return;
-
-    try {
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets[0]) {
-        const newPhoto: PhotoEvidence = {
-          id: Date.now().toString(),
-          uri: result.assets[0].uri,
-          type: 'camera',
-          timestamp: new Date().toISOString(),
-        };
-        setPhotos(prev => [...prev, newPhoto]);
-        setShowImageModal(false);
-      }
-    } catch (error) {
-      Alert.alert('Erro', 'Não foi possível tirar a foto.');
+    } finally {
+      setUpdatingStatus(false);
     }
   };
 
-  const pickImageFromGallery = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
+  const showStatusUpdateOptions = () => {
+    if (!deliveryItem) return;
 
-      if (!result.canceled && result.assets[0]) {
-        const newPhoto: PhotoEvidence = {
-          id: Date.now().toString(),
-          uri: result.assets[0].uri,
-          type: 'gallery',
-          timestamp: new Date().toISOString(),
-        };
-        setPhotos(prev => [...prev, newPhoto]);
-        setShowImageModal(false);
-      }
-    } catch (error) {
-      Alert.alert('Erro', 'Não foi possível selecionar a foto.');
-    }
-  };
-
-  const removePhoto = (photoId: string) => {
-    Alert.alert(
-      'Remover Foto',
-      'Tem certeza que deseja remover esta foto?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Remover',
-          style: 'destructive',
-          onPress: () => setPhotos(prev => prev.filter(p => p.id !== photoId))
-        }
-      ]
-    );
-  };
-
-  const openMapsNavigation = () => {
-    if (delivery) {
-      const address = encodeURIComponent(delivery.address);
-      const url = `https://maps.google.com/maps?daddr=${address}`;
-      Linking.openURL(url);
-    }
-  };
-
-  const callCustomer = () => {
-    if (delivery) {
-      const phone = delivery.phone.replace(/[^\d]/g, '');
-      Linking.openURL(`tel:${phone}`);
-    }
-  };
-
-  const finishDelivery = () => {
-    if (status === 'pendente') {
-      Alert.alert('Atenção', 'Selecione o status da entrega antes de finalizar.');
+    const actions = getAvailableOrderActions(deliveryItem.status);
+    
+    if (actions.length === 0) {
+      Alert.alert(
+        'Sem ações disponíveis',
+        `O status atual "${getOrderMobileStatusConfig(deliveryItem.status).text}" não permite mais ações pelo app.`
+      );
       return;
     }
 
-    Alert.alert(
-      'Finalizar Entrega',
-      `Confirmar entrega como "${status === 'entregue' ? 'Entregue' : 'Problema'}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Confirmar',
-          onPress: async () => {
-            setIsLoading(true);
-            // Simula envio dos dados
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            setIsLoading(false);
-            
-            Alert.alert(
-              'Sucesso!',
-              'Entrega finalizada com sucesso.',
-              [{ text: 'OK', onPress: () => router.back() }]
+    const alertOptions: Array<{ text: string; style?: 'cancel' | 'destructive' | undefined; onPress?: () => void }> = [
+      { text: 'Cancelar', style: 'cancel' },
+      ...actions.map((action: OrderActionMobile) => ({
+        text: action.label,
+        onPress: () => {
+          if (action.requiresReason && action.targetStatus === 'nao_entregue') {
+            Alert.prompt(
+              'Reportar Problema',
+              'Por favor, descreva o motivo da não entrega:',
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                {
+                  text: 'Confirmar Problema',
+                  onPress: (motivo) => {
+                    if (motivo) {
+                        handleUpdateStatus(action.targetStatus, motivo, action.requiresProof);
+                    } else {
+                        Alert.alert("Atenção", "O motivo é obrigatório para reportar um problema.")
+                    }
+                  },
+                },
+              ],
+              'plain-text'
             );
+          } else {
+            handleUpdateStatus(action.targetStatus, undefined, action.requiresProof);
           }
         }
-      ]
-    );
+      }))
+    ];
+
+    Alert.alert('Atualizar Status', 'Escolha uma nova situação para esta entrega:', alertOptions);
   };
 
-  if (!delivery || !route) {
+  const handleProofSuccess = (proofUrl: string) => {
+    loadDeliveryDetails();
+  };
+
+  const viewProofImage = (proofUrl: string) => {
+    setViewingProof(proofUrl);
+  };
+
+  const callCustomer = () => {
+    if (!deliveryItem?.phone) { Alert.alert('Aviso', 'Número de telefone não disponível.'); return; }
+    const phoneNumber = deliveryItem.phone.replace(/[^\d]/g, '');
+    const url = `tel:${phoneNumber}`;
+    Linking.canOpenURL(url).then(supported => {
+      if (supported) Linking.openURL(url);
+      else Alert.alert('Erro', 'Não foi possível abrir o discador.');
+    }).catch(() => Alert.alert('Erro', 'Ocorreu um problema ao tentar ligar.'));
+  };
+
+  const openMaps = () => {
+    if (!deliveryItem?.address) { Alert.alert('Aviso', 'Endereço não disponível.'); return; }
+    const encodedAddress = encodeURIComponent(deliveryItem.address);
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`;
+    Linking.openURL(url).catch(() => Alert.alert('Erro', 'Não foi possível abrir o mapa.'));
+  };
+
+  if (loading && !deliveryItem) {
     return (
-      <View style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Carregando entrega...</Text>
-        </View>
+      <View style={styles.centeredFeedback}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text style={styles.loadingText}>📦 Carregando detalhes da entrega...</Text>
       </View>
     );
   }
 
+  if (error && !deliveryItem) {
+    return (
+      <View style={styles.centeredFeedback}>
+        <Text style={styles.errorEmoji}>❌</Text>
+        <Text style={styles.errorTitle}>Erro ao carregar</Text>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={loadDeliveryDetails}>
+          <Text style={styles.retryButtonText}>🔄 Tentar novamente</Text>
+        </TouchableOpacity>
+        {router.canGoBack() && (
+            <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+                <Text style={styles.backButtonText}>← Voltar</Text>
+            </TouchableOpacity>
+        )}
+      </View>
+    );
+  }
+
+  if (!deliveryItem) {
+    return (
+      <View style={styles.centeredFeedback}>
+        <Text style={styles.errorEmoji}>📭</Text>
+        <Text style={styles.errorTitle}>Entrega não encontrada</Text>
+        {router.canGoBack() && (
+            <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+                <Text style={styles.backButtonText}>← Voltar</Text>
+            </TouchableOpacity>
+        )}
+      </View>
+    );
+  }
+
+  const statusConfig = getOrderMobileStatusConfig(deliveryItem.status);
+  const availableActions = getAvailableOrderActions(deliveryItem.status);
+
   return (
     <View style={styles.container}>
-      <ScrollView style={styles.scrollView}>
-        {/* Informações do Cliente */}
-        <View style={styles.customerCard}>
-          <Text style={styles.customerName}>👤 {delivery.customerName}</Text>
-          <Text style={styles.address}>📍 {delivery.address}</Text>
-          <Text style={styles.phone}>📞 {delivery.phone}</Text>
-          
-          <View style={styles.deliveryInfo}>
-            <Text style={styles.value}>💰 R$ {delivery.value.toFixed(2)}</Text>
-            <Text style={styles.paymentMethod}>💳 {delivery.paymentMethod}</Text>
+      <ScrollView
+        contentContainerStyle={styles.scrollViewContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={["#007AFF"]} tintColor={"#007AFF"}/>}
+      >
+        <View style={styles.deliveryHeader}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.deliveryTitle}>Pedido N°: {deliveryItem.numeroPedido}</Text>
+            <Text style={styles.customerName}>{deliveryItem.customerName}</Text>
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: statusConfig.color }]}>
+            <Text style={styles.statusText}>{statusConfig.icon} {statusConfig.text}</Text>
           </View>
         </View>
 
-        {/* Ações Rápidas */}
-        <View style={styles.quickActions}>
-          <TouchableOpacity style={styles.actionButton} onPress={openMapsNavigation}>
-            <Text style={styles.actionButtonText}>🗺️ Navegar</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity style={styles.actionButton} onPress={callCustomer}>
-            <Text style={styles.actionButtonText}>📞 Ligar</Text>
-          </TouchableOpacity>
+        <View style={styles.statusDescription}>
+          <Text style={styles.statusDescriptionText}>{statusConfig.description}</Text>
         </View>
 
-        {/* Itens da Entrega */}
-        <View style={styles.itemsSection}>
-          <Text style={styles.sectionTitle}>📦 Itens da Entrega</Text>
-          <View style={styles.itemsContainer}>
-            {delivery.items.map((item, index) => (
-              <Text key={index} style={styles.itemText}>• {item}</Text>
-            ))}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👤 Informações do Cliente</Text>
+          <View style={styles.infoCard}>
+            <View style={styles.infoRow}><Text style={styles.infoLabel}>Nome:</Text><Text style={styles.infoValue}>{deliveryItem.customerName}</Text></View>
+            {deliveryItem.phone && (<View style={styles.infoRow}><Text style={styles.infoLabel}>Telefone:</Text><TouchableOpacity onPress={callCustomer}><Text style={[styles.infoValue, styles.linkText]}>📞 {deliveryItem.phone}</Text></TouchableOpacity></View>)}
+            {deliveryItem.nomeContato && (<View style={styles.infoRow}><Text style={styles.infoLabel}>Contato:</Text><Text style={styles.infoValue}>{deliveryItem.nomeContato}</Text></View>)}
           </View>
         </View>
 
-        {/* Observações do Cliente */}
-        {delivery.notes && (
-          <View style={styles.notesSection}>
-            <Text style={styles.sectionTitle}>📝 Observações do Cliente</Text>
-            <Text style={styles.clientNotes}>{delivery.notes}</Text>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📍 Endereço de Entrega</Text>
+          <View style={styles.addressCard}>
+            <Text style={styles.addressText}>{deliveryItem.address}</Text>
+            <TouchableOpacity style={styles.mapsButton} onPress={openMaps}><Text style={styles.mapsButtonText}>🗺️ Abrir no Mapa</Text></TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>📋 Detalhes do Pedido</Text>
+          <View style={styles.infoCard}>
+            <View style={styles.infoRow}><Text style={styles.infoLabel}>Valor:</Text><Text style={[styles.infoValue, styles.valueText]}>R$ {deliveryItem.value.toFixed(2)}</Text></View>
+            <View style={styles.infoRow}><Text style={styles.infoLabel}>Pagamento:</Text><Text style={styles.infoValue}>{deliveryItem.paymentMethod}</Text></View>
+            <View style={styles.infoRow}><Text style={styles.infoLabel}>Itens:</Text>
+              <View style={styles.itemsList}>
+                {deliveryItem.items.map((item: string, index: number) => (
+                  <Text key={index} style={styles.itemText}>• {item}</Text>
+                ))}
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {deliveryItem.notes && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>💬 Instruções Especiais</Text>
+            <View style={styles.notesCard}><Text style={styles.notesText}>{deliveryItem.notes}</Text></View>
           </View>
         )}
 
-        {/* Status da Entrega */}
-        <View style={styles.statusSection}>
-          <Text style={styles.sectionTitle}>📊 Status da Entrega</Text>
-          <View style={styles.statusOptions}>
-            <TouchableOpacity
-              style={[
-                styles.statusOption,
-                status === 'entregue' && styles.statusOptionActive
-              ]}
-              onPress={() => setStatus('entregue')}
-            >
-              <Text style={styles.statusIcon}>✅</Text>
-              <Text style={styles.statusText}>Entregue</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={[
-                styles.statusOption,
-                status === 'problema' && styles.statusOptionActive
-              ]}
-              onPress={() => setStatus('problema')}
-            >
-              <Text style={styles.statusIcon}>❌</Text>
-              <Text style={styles.statusText}>Problema</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Evidências/Fotos */}
-        <View style={styles.evidenceSection}>
-          <Text style={styles.sectionTitle}>📸 Evidências</Text>
-          
-          <TouchableOpacity
-            style={styles.addPhotoButton}
-            onPress={() => setShowImageModal(true)}
-          >
-            <Text style={styles.addPhotoButtonText}>📷 Adicionar Foto</Text>
-          </TouchableOpacity>
-
-          {photos.length > 0 && (
-            <View style={styles.photosGrid}>
-              {photos.map((photo) => (
-                <TouchableOpacity
-                  key={photo.id}
-                  style={styles.photoContainer}
-                  onLongPress={() => removePhoto(photo.id)}
+        {deliveryItem.hasProof && deliveryItem.proofs && deliveryItem.proofs.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>📸 Comprovantes de Entrega ({deliveryItem.proofCount})</Text>
+            <View style={styles.proofsContainer}>
+              {deliveryItem.proofs.map((proof, index) => (
+                <TouchableOpacity 
+                  key={proof.id} 
+                  style={styles.proofCard}
+                  onPress={() => viewProofImage(proof.proofUrl)}
                 >
-                  <Image source={{ uri: photo.uri }} style={styles.photo} />
-                  <Text style={styles.photoType}>
-                    {photo.type === 'camera' ? '📷' : '🖼️'}
+                  <Image 
+                    source={{ uri: proof.proofUrl }} 
+                    style={styles.proofThumbnail}
+                    resizeMode="cover"
+                  />
+                  <Text style={styles.proofDate}>
+                    {new Date(proof.createdAt).toLocaleDateString('pt-BR')} às{' '}
+                    {new Date(proof.createdAt).toLocaleTimeString('pt-BR', { 
+                      hour: '2-digit', 
+                      minute: '2-digit' 
+                    })}
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
+          </View>
+        )}
+        
+        <View style={styles.actionsSection}>
+          <Text style={styles.sectionTitle}>⚡ Ações Rápidas</Text>
+          <View style={styles.actionButtonsContainer}>
+            {deliveryItem.phone && (
+              <TouchableOpacity style={[styles.actionButtonBase, styles.callButton]} onPress={callCustomer}>
+                <Text style={styles.actionButtonText}>📞 Ligar</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={[styles.actionButtonBase, styles.navigateButton]} onPress={openMaps}>
+              <Text style={styles.actionButtonText}>🗺️ Navegar</Text>
+            </TouchableOpacity>
+            
+            {(deliveryItem.status === 'entregue' || deliveryItem.status === 'nao_entregue') && (
+              <TouchableOpacity 
+                style={[styles.actionButtonBase, styles.proofButton]} 
+                onPress={() => setShowProofCamera(true)}
+              >
+                <Text style={styles.actionButtonText}>📷 Adicionar Comprovante</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
+        {availableActions.length > 0 && (
+          <View style={styles.statusActionsSection}>
+            <Text style={styles.sectionTitle}>🎯 Atualizar Situação da Entrega</Text>
+            <View style={styles.statusActionsContainer}>
+              {availableActions.map((action: OrderActionMobile) => (
+                <TouchableOpacity
+                  key={action.id}
+                  style={[ styles.statusActionButtonBase, { backgroundColor: getActionColor(action.style) }]}
+                  onPress={() => {
+                    if (action.requiresReason && action.targetStatus === 'nao_entregue') {
+                        Alert.prompt( 'Reportar Problema', 'Descreva o motivo da não entrega:',
+                            [{ text: 'Cancelar', style: 'cancel' }, { 
+                              text: 'Confirmar', 
+                              onPress: (motivo) => motivo && handleUpdateStatus(action.targetStatus, motivo, action.requiresProof) 
+                            }],
+                            'plain-text'
+                        );
+                    } else {
+                        handleUpdateStatus(action.targetStatus, undefined, action.requiresProof);
+                    }
+                  }}
+                  disabled={updatingStatus}
+                >
+                  <Text style={styles.statusActionButtonText}>
+                    {action.label} {updatingStatus && action.targetStatus === deliveryItem.status ? '(Atualizando...)' : ''}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+        {updatingStatus && <ActivityIndicator style={{marginTop:10}} size="small" color="#007AFF"/>}
+
+        <View style={styles.footer}>
+          {router.canGoBack() && (
+            <TouchableOpacity style={styles.backToRouteButton} onPress={() => router.back()}>
+              <Text style={styles.backToRouteText}>← Voltar</Text>
+            </TouchableOpacity>
           )}
         </View>
-
-        {/* Observações do Motorista */}
-        <View style={styles.driverNotesSection}>
-          <Text style={styles.sectionTitle}>📋 Suas Observações</Text>
-          <TextInput
-            style={styles.driverNotesInput}
-            placeholder="Digite observações sobre a entrega..."
-            multiline
-            numberOfLines={4}
-            value={driverNotes}
-            onChangeText={setDriverNotes}
-            textAlignVertical="top"
-          />
-        </View>
-
-        {/* Botão Finalizar */}
-        <TouchableOpacity
-          style={[styles.finishButton, isLoading && styles.finishButtonDisabled]}
-          onPress={finishDelivery}
-          disabled={isLoading}
-        >
-          <Text style={styles.finishButtonText}>
-            {isLoading ? '⏳ Finalizando...' : '✅ Finalizar Entrega'}
-          </Text>
-        </TouchableOpacity>
       </ScrollView>
 
-      {/* Modal para Adicionar Foto */}
+      <ProofCamera
+        orderId={id || ''}
+        visible={showProofCamera}
+        onClose={() => setShowProofCamera(false)}
+        onSuccess={handleProofSuccess}
+        title="Comprovante de Entrega"
+      />
+
       <Modal
-        visible={showImageModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowImageModal(false)}
+        visible={!!viewingProof}
+        transparent={true}
+        onRequestClose={() => setViewingProof(null)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📸 Adicionar Evidência</Text>
-            
-            <TouchableOpacity style={styles.modalButton} onPress={takePhoto}>
-              <Text style={styles.modalButtonText}>📷 Tirar Foto</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.modalButton} onPress={pickImageFromGallery}>
-              <Text style={styles.modalButtonText}>🖼️ Escolher da Galeria</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={[styles.modalButton, styles.modalCancelButton]}
-              onPress={() => setShowImageModal(false)}
+        <View style={styles.imageViewerContainer}>
+          <TouchableOpacity 
+            style={styles.imageViewerOverlay} 
+            onPress={() => setViewingProof(null)}
+          >
+            <Image 
+              source={{ uri: viewingProof || '' }} 
+              style={styles.fullScreenImage}
+              resizeMode="contain"
+            />
+            <TouchableOpacity 
+              style={styles.closeImageViewer} 
+              onPress={() => setViewingProof(null)}
             >
-              <Text style={styles.modalButtonText}>❌ Cancelar</Text>
+              <Text style={styles.closeImageViewerText}>✕</Text>
             </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         </View>
       </Modal>
     </View>
@@ -339,264 +427,72 @@ export default function DeliveryScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#666',
-  },
-  customerCard: {
-    backgroundColor: 'white',
-    margin: 16,
-    padding: 20,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  customerName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 8,
-  },
-  address: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 4,
-  },
-  phone: {
-    fontSize: 14,
-    color: '#2196F3',
-    marginBottom: 12,
-  },
-  deliveryInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#e1e5e9',
-  },
-  value: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#4CAF50',
-  },
-  paymentMethod: {
-    fontSize: 14,
-    color: '#666',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    marginHorizontal: 16,
-    marginBottom: 16,
-    gap: 12,
-  },
-  actionButton: {
-    flex: 1,
-    backgroundColor: '#2196F3',
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  actionButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-  itemsSection: {
-    backgroundColor: 'white',
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 12,
-  },
-  itemsContainer: {
-    backgroundColor: '#f8f9fa',
-    padding: 12,
-    borderRadius: 8,
-  },
-  itemText: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 4,
-  },
-  notesSection: {
-    backgroundColor: 'white',
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 12,
-  },
-  clientNotes: {
-    fontSize: 14,
-    color: '#666',
-    fontStyle: 'italic',
-    backgroundColor: '#fff3cd',
-    padding: 12,
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: '#ffc107',
-  },
-  statusSection: {
-    backgroundColor: 'white',
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 12,
-  },
-  statusOptions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  statusOption: {
-    flex: 1,
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e1e5e9',
-    alignItems: 'center',
-    backgroundColor: '#f8f9fa',
-  },
-  statusOptionActive: {
-    borderColor: '#4CAF50',
-    backgroundColor: '#e8f5e8',
-  },
-  statusIcon: {
-    fontSize: 24,
-    marginBottom: 4,
-  },
-  statusText: {
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  evidenceSection: {
-    backgroundColor: 'white',
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 12,
-  },
-  addPhotoButton: {
-    backgroundColor: '#ff9800',
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  addPhotoButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-  },
-  photosGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  photoContainer: {
-    position: 'relative',
-  },
-  photo: {
-    width: 80,
-    height: 80,
-    borderRadius: 8,
-  },
-  photoType: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    borderRadius: 10,
-    width: 20,
-    height: 20,
-    textAlign: 'center',
-    fontSize: 12,
-  },
-  driverNotesSection: {
-    backgroundColor: 'white',
-    margin: 16,
-    marginTop: 0,
-    padding: 16,
-    borderRadius: 12,
-  },
-  driverNotesInput: {
-    borderWidth: 1,
-    borderColor: '#e1e5e9',
-    borderRadius: 8,
-    padding: 12,
-    minHeight: 80,
-    fontSize: 14,
-    backgroundColor: '#f8f9fa',
-  },
-  finishButton: {
-    backgroundColor: '#4CAF50',
-    margin: 16,
-    marginTop: 0,
-    marginBottom: 32,
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  finishButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  finishButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 300,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 20,
-    color: '#333',
-  },
-  modalButton: {
-    backgroundColor: '#2196F3',
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  modalCancelButton: {
-    backgroundColor: '#666',
-  },
-  modalButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
+  container: { flex: 1, backgroundColor: '#E9ECEF' },
+  scrollViewContent: { paddingBottom: 20 },
+  centeredFeedback: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, backgroundColor: '#E9ECEF' },
+  loadingText: { fontSize: 16, color: '#495057', marginTop: 10 },
+  errorEmoji: { fontSize: 50, marginBottom: 15 },
+  errorTitle: { fontSize: 20, fontWeight: 'bold', color: '#343A40', marginBottom: 8 },
+  errorText: { fontSize: 14, color: '#495057', textAlign: 'center', marginBottom: 20 },
+  retryButton: { backgroundColor: '#007AFF', paddingHorizontal: 25, paddingVertical: 12, borderRadius: 8, marginBottom: 10, elevation: 2 },
+  retryButtonText: { color: 'white', fontWeight: '600', fontSize: 15 },
+  backButton: { backgroundColor: '#6C757D', paddingHorizontal: 25, paddingVertical: 12, borderRadius: 8, elevation: 2 },
+  backButtonText: { color: 'white', fontWeight: '600', fontSize: 15 },
+  
+  deliveryHeader: { backgroundColor: 'white', padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#DEE2E6' },
+  headerLeft: { flex: 1, marginRight: 10 },
+  deliveryTitle: { fontSize: 14, color: '#6C757D', marginBottom: 2 },
+  customerName: { fontSize: 22, fontWeight: 'bold', color: '#212529' },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, minWidth: 100, alignItems: 'center', justifyContent: 'center' },
+  statusText: { color: 'white', fontSize: 11, fontWeight: 'bold', textTransform: 'uppercase' },
+  statusDescription: { backgroundColor: '#f8f9fa', paddingVertical: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#DEE2E6'},
+  statusDescriptionText: { fontSize: 13, color: '#495057', textAlign: 'center', fontStyle: 'italic' },
+  
+  section: { marginBottom: 12, },
+  sectionTitle: { fontSize: 15, fontWeight: 'bold', color: '#343A40', paddingHorizontal: 16, marginBottom: 8, marginTop: 10, textTransform: 'uppercase', letterSpacing: 0.5 },
+  
+  infoCard: { backgroundColor: 'white', marginHorizontal: 16, paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8, elevation: 1, borderWidth:1, borderColor:'#F0F0F0' },
+  infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  infoLabel: { fontSize: 14, color: '#6C757D', fontWeight: '500', marginRight: 8 },
+  infoValue: { fontSize: 14, color: '#212529', flexShrink: 1, textAlign: 'right' },
+  linkText: { color: '#007AFF', textDecorationLine: 'underline' },
+  valueText: { color: '#28A745', fontWeight: 'bold', fontSize: 15 },
+  itemsList: { flex: 1, alignItems: 'flex-end' },
+  itemText: { fontSize: 14, color: '#212529', marginBottom: 2 },
+  
+  addressCard: { backgroundColor: 'white', marginHorizontal: 16, padding: 16, borderRadius: 8, elevation: 1, borderWidth:1, borderColor:'#F0F0F0' },
+  addressText: { fontSize: 15, color: '#212529', lineHeight: 22, marginBottom: 12 },
+  mapsButton: { backgroundColor: '#007AFF', padding: 12, borderRadius: 8, alignItems: 'center', elevation: 2 },
+  mapsButtonText: { color: 'white', fontWeight: 'bold', fontSize: 14 },
+  
+  notesCard: { backgroundColor: '#FFF9C4', marginHorizontal: 16, padding: 16, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#FFEB3B', elevation: 1 },
+  notesText: { fontSize: 14, color: '#5D4037', lineHeight: 20 },
+
+  proofsContainer: { paddingHorizontal: 16 },
+  proofCard: { backgroundColor: 'white', borderRadius: 8, padding: 12, marginBottom: 12, elevation: 2 },
+  proofThumbnail: { width: '100%', height: 200, borderRadius: 8, marginBottom: 8 },
+  proofDate: { fontSize: 12, color: '#666', textAlign: 'center' },
+
+  actionsSection: { marginBottom: 16, marginTop: 10 },
+  actionButtonsContainer: { flexDirection: 'row', paddingHorizontal: 16, justifyContent: 'space-around', flexWrap: 'wrap' },
+  actionButtonBase: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginHorizontal: 4, marginVertical: 4, elevation: 2, borderWidth:1, borderColor: '#CED4DA'},
+  actionButtonText: { color: '#333', fontWeight: 'bold', fontSize: 12 },
+  callButton: { backgroundColor: '#E3F2FD' },
+  navigateButton: { backgroundColor: '#E8F5E9' },
+  proofButton: { backgroundColor: '#FFF3E0' },
+  
+  statusActionsSection: { marginBottom: 16, marginTop: 10 },
+  statusActionsContainer: { paddingHorizontal: 16, gap: 10 },
+  statusActionButtonBase: { paddingVertical: 14, borderRadius: 8, alignItems: 'center', elevation: 2, borderWidth:1, borderColor:'transparent' },
+  statusActionButtonText: { color: 'white', fontSize: 14, fontWeight: 'bold' },
+  
+  footer: { paddingHorizontal: 16, paddingTop:10, paddingBottom: 24 },
+  backToRouteButton: { backgroundColor: '#6C757D', padding: 14, borderRadius: 8, alignItems: 'center', elevation: 2 },
+  backToRouteText: { color: 'white', fontSize: 15, fontWeight: 'bold' },
+
+  imageViewerContainer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)' },
+  imageViewerOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  fullScreenImage: { width: '90%', height: '80%' },
+  closeImageViewer: { position: 'absolute', top: 50, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.8)', justifyContent: 'center', alignItems: 'center' },
+  closeImageViewerText: { fontSize: 20, fontWeight: 'bold' },
 });
